@@ -2,7 +2,6 @@ import sys
 import os
 import logging
 import time
-import json
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -10,7 +9,6 @@ from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
-from typing import Optional
 
 # ── SETTINGS ─────────────────────────────────────────────────────
 from settings import settings
@@ -22,12 +20,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.extension import _rate_limit_exceeded_handler
 
-# ── LOCAL MODULES ───────────────────────────────────────────────
-from generate.generate import generate_circuit
-from explain.explain_module import explain_circuit
-from diagnose.diagnose_module import diagnose_circuit
-from export.export_module import export_module
-from hint.hint_module import generate_hint
+# ── GATEWAY AGENT ─────────────────────────────────────────────────
+from agent.executor import conversational_agent
+from agent.session_store import get_circuit, clear_session
 
 # ── LOGGING ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -46,8 +41,6 @@ app = FastAPI(
 )
 
 # ── RATE LIMITER SETUP ──────────────────────────────────────────
-# storage_uri points at Redis (e.g. Upstash) in production so limits hold
-# across serverless instances; falls back to in-memory when unset (local dev).
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=settings.rate_limit_redis_url,
@@ -100,42 +93,36 @@ def rl(limit: str):
     return limiter.limit(limit)
 
 # ── REQUEST MODELS ───────────────────────────────────────────────
-class GenerateRequest(BaseModel):
-    prompt: str
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
 
-    @field_validator("prompt")
+    @field_validator("message")
     @classmethod
-    def prompt_not_empty(cls, v: str) -> str:
+    def message_not_empty(cls, v: str) -> str:
         if not v or not v.strip():
-            raise ValueError("prompt cannot be empty")
+            raise ValueError("message cannot be empty")
         if len(v) > 1000:
-            raise ValueError("prompt must be under 1000 characters")
+            raise ValueError("message must be under 1000 characters")
         return v.strip()
 
-class CircuitRequest(BaseModel):
-    circuit_json: dict
-
-class ExportRequest(BaseModel):
-    circuit_json: dict
-    export_format: Optional[str] = "spice"
-
-    @field_validator("export_format")
+    @field_validator("session_id")
     @classmethod
-    def valid_format(cls, v: str) -> str:
-        allowed = {"spice", "svg", "gate_json"}
-        if v not in allowed:
-            raise ValueError(f"export_format must be one of {allowed}")
-        return v
+    def session_id_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("session_id cannot be empty")
+        return v.strip()
 
-class HintRequest(BaseModel):
-    problem_title: str = ""
-    problem_description: Optional[str] = ""
-    inputs: list[str] = []
-    outputs: list[str] = []
-    truth_table: list[dict] = []
-    gates: list[dict] = []
-    wires: list[dict] = []
-    last_result: Optional[dict] = None
+
+class SessionRequest(BaseModel):
+    session_id: str
+
+    @field_validator("session_id")
+    @classmethod
+    def session_id_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("session_id cannot be empty")
+        return v.strip()
 
 # ── HEALTH ───────────────────────────────────────────────────────
 @app.get("/", tags=["health"])
@@ -150,90 +137,38 @@ def root():
 def health():
     return {"status": "ok"}
 
-# ── CORE ENDPOINTS ───────────────────────────────────────────────
+# ── GATEWAY ENDPOINT ───────────────────────────────────────────────
+# Replaces the old /generate, /explain, /diagnose, /export, /hint, and
+# /generate-and-explain routes. The agent decides which tool(s) to call
+# based on the message and the session's existing state (chat history +
+# current circuit).
 
-@app.post("/generate", tags=["core"])
-@rl(settings.generate_rate_limit)
-def generate(
+@app.post("/chat", tags=["core"])
+@rl(settings.chat_rate_limit)
+def chat(
     request: Request,
-    req: GenerateRequest,
+    req: ChatRequest,
     _: None = Depends(verify_api_key),
 ):
-    logger.info(f"Generate request: '{req.prompt[:60]}'")
+    logger.info(f"Chat request [{req.session_id}]: '{req.message[:60]}'")
 
-    result = generate_circuit(req.prompt)
-    if "error" in result:
-        raise HTTPException(status_code=422, detail=result["error"])
-
-    return result
-
-
-@app.post("/explain", tags=["core"])
-@rl(settings.explain_rate_limit)
-def explain(
-    request: Request,
-    req: CircuitRequest,
-    _: None = Depends(verify_api_key),
-):
-    logger.info("Explain request received")
-    return explain_circuit(req.circuit_json)
-
-
-@app.post("/diagnose", tags=["core"])
-@rl(settings.diagnose_rate_limit)
-def diagnose(
-    request: Request,
-    req: CircuitRequest,
-    _: None = Depends(verify_api_key),
-):
-    logger.info("Diagnose request received")
-    return diagnose_circuit(req.circuit_json)
-
-
-@app.post("/export", tags=["core"])
-@rl(settings.export_rate_limit)
-def export(
-    request: Request,
-    req: ExportRequest,
-    _: None = Depends(verify_api_key),
-):
-    logger.info(f"Export request: format={req.export_format}")
-
-    json_str = json.dumps(req.circuit_json)
-    result = export_module(json_str, export_format=req.export_format)
-
-    if result.get("status") == "error":
-        raise HTTPException(status_code=422, detail=result["message"])
-
-    return result
-
-
-@app.post("/hint", tags=["core"])
-@rl(settings.hint_rate_limit)
-def hint(
-    request: Request,
-    req: HintRequest,
-    _: None = Depends(verify_api_key),
-):
-    logger.info(f"Hint request: '{req.problem_title[:60]}'")
-    return generate_hint(req.model_dump())
-
-
-@app.post("/generate-and-explain", tags=["core"])
-@rl(settings.generate_and_explain_rate_limit)
-def generate_and_explain(
-    request: Request,
-    req: GenerateRequest,
-    _: None = Depends(verify_api_key),
-):
-    logger.info(f"Generate-and-explain request: '{req.prompt[:60]}'")
-
-    circuit = generate_circuit(req.prompt)
-    if "error" in circuit:
-        raise HTTPException(status_code=422, detail=circuit["error"])
+    try:
+        result = conversational_agent.invoke(
+            {"input": req.message},
+            config={"configurable": {"session_id": req.session_id}},
+        )
+    except Exception as e:
+        logger.error(f"Agent invocation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Agent failed to process the request.")
 
     return {
-        "circuit": circuit,
-        "explanation": explain_circuit(circuit),
-        "diagnosis": diagnose_circuit(circuit),
+        "reply": result["output"],
+        "circuit": get_circuit(req.session_id),
     }
+
+
+@app.post("/chat/reset", tags=["core"])
+def reset_chat(req: SessionRequest):
+    logger.info(f"Resetting session [{req.session_id}]")
+    clear_session(req.session_id)
+    return {"status": "ok"}
