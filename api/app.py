@@ -12,6 +12,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 from typing import Optional
 
+# ── SETTINGS ─────────────────────────────────────────────────────
+from settings import settings
+
 # ── RATE LIMITING ───────────────────────────────────────────────
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -28,16 +31,16 @@ from hint.hint_module import generate_hint
 
 # ── LOGGING ──────────────────────────────────────────────────────
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format=settings.log_format,
 )
 logger = logging.getLogger("circuitmind")
 
 # ── APP ──────────────────────────────────────────────────────────
 app = FastAPI(
-    title="CircuitMind API",
-    description="AI-powered circuit generator, explainer, and diagnostics tool",
-    version="1.0.0",
+    title=settings.app_title,
+    description=settings.app_description,
+    version=settings.app_version,
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -47,7 +50,7 @@ app = FastAPI(
 # across serverless instances; falls back to in-memory when unset (local dev).
 limiter = Limiter(
     key_func=get_remote_address,
-    storage_uri=os.environ.get("RATE_LIMIT_REDIS_URL"),
+    storage_uri=settings.rate_limit_redis_url,
 )
 app.state.limiter = limiter
 
@@ -55,27 +58,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 # ── API KEY SECURITY ─────────────────────────────────────────────
-API_KEY = os.environ.get("CIRCUITMIND_API_KEY")
-
 def verify_api_key(x_api_key: str = Header(default=None)):
-    if not API_KEY:
+    if not settings.circuitmind_api_key:
         return  # dev mode (open access)
 
-    if x_api_key != API_KEY:
+    if x_api_key != settings.circuitmind_api_key:
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key"
         )
 
 # ── CORS ─────────────────────────────────────────────────────────
-allowed_origins = os.environ.get(
-    "ALLOWED_ORIGINS",
-    "http://localhost:8501,http://127.0.0.1:8501,http://localhost:3000,http://127.0.0.1:3000"
-).split(",")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
@@ -147,7 +143,7 @@ def root():
     return {
         "status": "running",
         "message": "CircuitMind API is live!",
-        "version": "1.0.0",
+        "version": settings.app_version,
     }
 
 @app.get("/health", tags=["health"])
@@ -157,7 +153,7 @@ def health():
 # ── CORE ENDPOINTS ───────────────────────────────────────────────
 
 @app.post("/generate", tags=["core"])
-@rl("5/minute")
+@rl(settings.generate_rate_limit)
 def generate(
     request: Request,
     req: GenerateRequest,
@@ -173,7 +169,7 @@ def generate(
 
 
 @app.post("/explain", tags=["core"])
-@rl("10/minute")
+@rl(settings.explain_rate_limit)
 def explain(
     request: Request,
     req: CircuitRequest,
@@ -184,7 +180,7 @@ def explain(
 
 
 @app.post("/diagnose", tags=["core"])
-@rl("10/minute")
+@rl(settings.diagnose_rate_limit)
 def diagnose(
     request: Request,
     req: CircuitRequest,
@@ -195,7 +191,7 @@ def diagnose(
 
 
 @app.post("/export", tags=["core"])
-@rl("10/minute")
+@rl(settings.export_rate_limit)
 def export(
     request: Request,
     req: ExportRequest,
@@ -213,7 +209,7 @@ def export(
 
 
 @app.post("/hint", tags=["core"])
-@rl("10/minute")
+@rl(settings.hint_rate_limit)
 def hint(
     request: Request,
     req: HintRequest,
@@ -224,7 +220,7 @@ def hint(
 
 
 @app.post("/generate-and-explain", tags=["core"])
-@rl("3/minute")
+@rl(settings.generate_and_explain_rate_limit)
 def generate_and_explain(
     request: Request,
     req: GenerateRequest,
