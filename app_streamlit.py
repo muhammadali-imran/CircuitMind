@@ -1,50 +1,27 @@
 """
 CircuitMind - Streamlit Web UI
 Monolithic Architecture (Direct Python Imports)
+
+Single unified chat interface backed by the LangChain gateway agent,
+replacing the old Generate / Explain / Diagnose / Export / Chatbot tabs —
+the agent now routes a message to whichever of those actions fits.
 """
 
 import os
 import sys
 import json
+import uuid
 import base64
-import traceback
 from dotenv import load_dotenv
 import streamlit as st
 
-# Ensure root path is in sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from generate.generate import generate_circuit as _generate_circuit
-from explain.explain_module import explain_circuit as _explain_circuit
-from diagnose.diagnose_module import diagnose_circuit as _diagnose_circuit
-from export.export_module import export_module as _export_module
+from agent.executor import conversational_agent
+from agent.session_store import get_circuit, clear_session
+from export.export_module import export_module
 
 load_dotenv()
-
-# ── API WRAPPER FUNCTIONS (Local) ─────────────────────────────────────────────
-
-def _catch_errors(func, *args, **kwargs):
-    try:
-        res = func(*args, **kwargs)
-        # If the function itself returns an error dict, pass it through
-        if isinstance(res, dict) and "error" in res:
-            return res
-        return res
-    except Exception as e:
-        return {"error": f"Internal Error: {str(e)}"}
-
-def generate_circuit(prompt):
-    return _catch_errors(_generate_circuit, prompt)
-
-def explain_circuit(data):
-    return _catch_errors(_explain_circuit, data)
-
-def diagnose_circuit(data):
-    return _catch_errors(_diagnose_circuit, data)
-
-def export_module(data, export_format="svg"):
-    return _catch_errors(_export_module, data, export_format=export_format)
-
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="CircuitMind", layout="wide", page_icon="⚡")
@@ -52,262 +29,113 @@ st.set_page_config(page_title="CircuitMind", layout="wide", page_icon="⚡")
 st.title("⚡ CircuitMind")
 st.subheader("AI-Powered Electronics Assistant")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔧 Generate",
-    "📖 Explain",
-    "🔍 Diagnose",
-    "📤 Export",
-    "💬 Chatbot",
-])
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
-# ── TAB 1: GENERATE ────────────────────────────────────────────────────────────
-with tab1:
-    st.subheader("Generate New Circuit")
-    prompt = st.text_input("Describe your circuit", "make me a LED circuit")
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "Hi! Describe a circuit you'd like me to generate, then ask me "
+                "to explain, diagnose, or export it — or ask a digital-logic "
+                "hint question. 😊"
+            ),
+        }
+    ]
 
-    if st.button("Generate", type="primary"):
-        with st.spinner("Generating..."):
-            result = generate_circuit(prompt)
+col_chat, col_circuit = st.columns([2, 1])
 
-        if not result or "error" in result:
-            st.error(result.get("error", "Generation failed"))
-        else:
-            st.success(f"✅ {result.get('circuit_name', 'Circuit Generated')}")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Components:**")
-                for c in result.get("components", []):
-                    st.markdown(f"- {c}")
-
-            with col2:
-                st.markdown("**Connections:**")
-                for c in result.get("connections", []):
-                    st.markdown(f"- {c}")
-
-            st.caption(
-                f"Source: {result.get('source', '')} | Confidence: {result.get('confidence', '')}"
-            )
-
-            # ── EXPORT SVG VIA API ──
-            svg_res = export_module(json.dumps(result), export_format="svg")
-
-            if svg_res.get("status") == "success" and "svg_markup" in svg_res:
-                st.markdown("**Schematic Diagram:**")
-
-                b64 = base64.b64encode(svg_res["svg_markup"].encode()).decode()
-                st.markdown(
-                    f'<img src="data:image/svg+xml;base64,{b64}" '
-                    f'style="max-width:400px;width:100%;background:white;padding:16px;border-radius:8px;">',
-                    unsafe_allow_html=True,
-                )
-
-            st.markdown("**Circuit JSON:**")
-            st.code(json.dumps(result, indent=2), language="json")
-
-
-# ── TAB 2: EXPLAIN ─────────────────────────────────────────────────────────────
-with tab2:
-    st.subheader("Explain Circuit")
-    json_input = st.text_area("Paste circuit JSON", height=250, key="explain")
-
-    if st.button("Explain", type="primary"):
-        try:
-            data = json.loads(json_input)
-
-            if isinstance(data, dict) and "circuit_json" in data:
-                data = data["circuit_json"]
-
-            result = explain_circuit(data)
-
-            if not result or "error" in result:
-                st.error(result.get("error", "Explain failed"))
-            else:
-                st.success("**Explanation:**")
-                st.write(result.get("explanation", "No explanation"))
-
-                if result.get("flow_description"):
-                    st.markdown(f"**Flow:** {result['flow_description']}")
-
-                if result.get("component_details"):
-                    st.markdown("**Components:**")
-                    for comp in result["component_details"]:
-                        st.markdown(
-                            f"- **{comp['name']}** — {comp['role']}: {comp['description']}"
-                        )
-
-                for w in result.get("warnings", []):
-                    st.warning(w)
-
-        except json.JSONDecodeError as e:
-            st.error(f"Invalid JSON: {e}")
-
-
-# ── TAB 3: DIAGNOSE ────────────────────────────────────────────────────────────
-with tab3:
-    st.subheader("Diagnose Circuit")
-    json_input2 = st.text_area("Paste circuit JSON", height=200, key="diag")
-
-    if st.button("Diagnose", type="primary"):
-        try:
-            data = json.loads(json_input2)
-
-            if isinstance(data, dict) and "circuit_json" in data:
-                data = data["circuit_json"]
-
-            result = diagnose_circuit(data)
-
-            if not result:
-                st.error("Diagnosis failed")
-            elif result.get("error"):
-                st.error(result["error"])
-            elif result.get("passed"):
-                st.success("✅ No issues found. Circuit looks valid.")
-            else:
-                st.error(f"❌ {len(result.get('issues', []))} issue(s) found:")
-                for issue in result.get("issues", []):
-                    if issue.startswith("Error"):
-                        st.error(issue)
-                    elif issue.startswith("Warning"):
-                        st.warning(issue)
-                    else:
-                        st.info(issue)
-
-        except json.JSONDecodeError as e:
-            st.error(f"Invalid JSON: {e}")
-
-
-# ── TAB 4: EXPORT ──────────────────────────────────────────────────────────────
-with tab4:
-    st.subheader("Export Circuit")
-    json_input3 = st.text_area("Paste circuit JSON", height=200, key="export_area")
-
-    fmt = st.radio("Export Format", ["spice", "svg", "gate_json"], horizontal=True)
-
-    if st.button("Export", type="primary"):
-        try:
-            data = json.loads(json_input3)
-
-            if isinstance(data, dict) and "circuit_json" in data:
-                data = data["circuit_json"]
-
-            result = export_module(json.dumps(data), export_format=fmt)
-
-            st.session_state["export_result"] = result
-            st.session_state["export_format"] = fmt
-
-        except json.JSONDecodeError as e:
-            st.session_state["export_result"] = {
-                "status": "error",
-                "message": f"Invalid JSON: {e}",
-            }
-
-    if "export_result" in st.session_state:
-        result = st.session_state["export_result"]
-        fmt_used = st.session_state.get("export_format", "spice")
-
-        if result.get("error") or result.get("status") == "error":
-            message = result.get("error") or result.get("message") or "Export request failed"
-            st.error(message)
-        else:
-            st.json(result)
-
-            if fmt_used == "spice" and "spice_netlist" in result:
-                st.download_button(
-                    label="⬇️ Download SPICE File",
-                    data=result["spice_netlist"],
-                    file_name="circuit.sp",
-                    mime="text/plain",
-                )
-
-            elif fmt_used == "svg" and "svg_markup" in result:
-                b64 = base64.b64encode(result["svg_markup"].encode()).decode()
-                st.markdown(
-                    f'<img src="data:image/svg+xml;base64,{b64}" '
-                    f'style="max-width:400px;width:100%;background:white;padding:16px;border-radius:8px;">',
-                    unsafe_allow_html=True,
-                )
-
-                st.download_button(
-                    label="⬇️ Download SVG File",
-                    data=result["svg_markup"],
-                    file_name=f"{result.get('circuit_name', 'circuit').replace(' ', '_')}.svg",
-                    mime="image/svg+xml",
-                )
-
-
-# ── TAB 5: CHATBOT ─────────────────────────────────────────────────────────────
-with tab5:
-    st.subheader("💬 CircuitMind Assistant")
-    st.write("Ask me anything about circuits or electronics!")
-
-    if "messages" not in st.session_state:
+# ── CHAT COLUMN ──────────────────────────────────────────────────────────────
+with col_chat:
+    if st.button("🗑️ Reset session"):
+        clear_session(st.session_state.session_id)
+        st.session_state.session_id = str(uuid.uuid4())
         st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": "Hello! I'm CircuitMind Assistant. Ask me anything about circuits or electronics! 😊",
-            }
-        ]
-
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": "Hello! I'm CircuitMind Assistant. Ask me anything about circuits or electronics! 😊",
-            }
+            {"role": "assistant", "content": "Session reset. What circuit would you like?"}
         ]
         st.rerun()
 
-    chat_container = st.container(height=450)
-
+    chat_container = st.container(height=500)
     with chat_container:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
-    user_input = st.chat_input("Ask about any circuit or electronics topic...")
+    user_input = st.chat_input("Ask CircuitMind...")
 
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        api_key = os.environ.get("GROQ_API_KEY")
-
-        if not api_key:
-            response = "⚠️ GROQ_API_KEY not set. Please add it to your .env file."
-        else:
-            try:
-                from groq import Groq
-
-                client = Groq(api_key=api_key)
-
-                system_msg = {
-                    "role": "system",
-                    "content": (
-                        "You are CircuitMind Assistant — an expert AI for electronics and circuits. "
-                        "Help users understand components, design circuits, explain how circuits work, "
-                        "and diagnose problems. Keep answers clear, helpful, and concise."
-                    ),
-                }
-
-                history = [
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.messages[-6:]
-                ]
-
-                completion = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[system_msg] + history,
-                    max_tokens=500,
-                )
-
-                response = completion.choices[0].message.content
-
-            except Exception as e:
-                response = f"Sorry, I couldn't connect right now. Error: {e}"
+        try:
+            result = conversational_agent.invoke(
+                {"input": user_input},
+                config={"configurable": {"session_id": st.session_state.session_id}},
+            )
+            response = result["output"]
+        except Exception as e:
+            response = f"Sorry, something went wrong: {e}"
 
         st.session_state.messages.append({"role": "assistant", "content": response})
         st.rerun()
 
+# ── CURRENT CIRCUIT COLUMN ────────────────────────────────────────────────────
+with col_circuit:
+    st.markdown("### Current Circuit")
+    circuit = get_circuit(st.session_state.session_id)
+
+    if not circuit:
+        st.caption("No circuit generated yet this session.")
+    else:
+        st.markdown(f"**{circuit.get('circuit_name', 'Untitled')}**")
+
+        st.markdown("**Components:**")
+        for c in circuit.get("components", []):
+            st.markdown(f"- {c}")
+
+        st.markdown("**Connections:**")
+        for c in circuit.get("connections", []):
+            st.markdown(f"- {c}")
+
+        svg_res = export_module(json.dumps(circuit), export_format="svg")
+        if svg_res.get("status") == "success" and "svg_markup" in svg_res:
+            b64 = base64.b64encode(svg_res["svg_markup"].encode()).decode()
+            st.markdown(
+                f'<img src="data:image/svg+xml;base64,{b64}" '
+                f'style="max-width:100%;width:100%;background:white;padding:16px;border-radius:8px;">',
+                unsafe_allow_html=True,
+            )
+
+        with st.expander("Circuit JSON"):
+            st.code(json.dumps(circuit, indent=2), language="json")
+
+        fmt = st.radio("Export format", ["spice", "svg", "gate_json"], horizontal=True, key="export_fmt")
+        export_res = export_module(json.dumps(circuit), export_format=fmt)
+
+        if export_res.get("status") == "success":
+            if fmt == "spice":
+                st.download_button(
+                    "⬇️ Download SPICE",
+                    export_res["spice_netlist"],
+                    file_name="circuit.sp",
+                    mime="text/plain",
+                )
+            elif fmt == "svg":
+                st.download_button(
+                    "⬇️ Download SVG",
+                    export_res["svg_markup"],
+                    file_name=f"{circuit.get('circuit_name', 'circuit').replace(' ', '_')}.svg",
+                    mime="image/svg+xml",
+                )
+            elif fmt == "gate_json":
+                st.download_button(
+                    "⬇️ Download Gate JSON",
+                    json.dumps(export_res["gate_json"], indent=2),
+                    file_name="circuit_gate.json",
+                    mime="application/json",
+                )
+        else:
+            st.caption(f"Export unavailable: {export_res.get('message', 'unknown error')}")
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -315,4 +143,4 @@ with st.sidebar:
     st.markdown("AI-powered electronics assistant")
     st.caption("Built by Team Delta")
 
-st.caption("CircuitMind Project")
+st.caption("CircuitMind")
