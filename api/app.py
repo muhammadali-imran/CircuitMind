@@ -21,7 +21,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.extension import _rate_limit_exceeded_handler
 
 # ── GATEWAY AGENT ─────────────────────────────────────────────────
-from agent.executor import conversational_agent
+from agent.executor import run_chat_turn
 from agent.session_store import get_circuit, clear_session
 
 # ── LOGGING ──────────────────────────────────────────────────────
@@ -153,16 +153,13 @@ def chat(
     logger.info(f"Chat request [{req.session_id}]: '{req.message[:60]}'")
 
     try:
-        result = conversational_agent.invoke(
-            {"input": req.message},
-            config={"configurable": {"session_id": req.session_id}},
-        )
+        reply = run_chat_turn(req.session_id, req.message)
     except Exception as e:
         logger.error(f"Agent invocation failed: {e}", exc_info=True)
         raise HTTPException(status_code=502, detail="Agent failed to process the request.")
 
     return {
-        "reply": result["output"],
+        "reply": reply,
         "circuit": get_circuit(req.session_id),
     }
 

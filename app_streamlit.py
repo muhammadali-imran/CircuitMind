@@ -17,7 +17,7 @@ import streamlit as st
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from agent.executor import conversational_agent
+from agent.executor import run_chat_turn
 from agent.session_store import get_circuit, clear_session
 from export.export_module import export_module
 
@@ -68,11 +68,7 @@ with col_chat:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
         try:
-            result = conversational_agent.invoke(
-                {"input": user_input},
-                config={"configurable": {"session_id": st.session_state.session_id}},
-            )
-            response = result["output"]
+            response = run_chat_turn(st.session_state.session_id, user_input)
         except Exception as e:
             response = f"Sorry, something went wrong: {e}"
 
@@ -143,4 +139,4 @@ with st.sidebar:
     st.markdown("AI-powered electronics assistant")
     st.caption("Built by Team Delta")
 
-st.caption("CircuitMind")
+st.caption("CircuitMind Project — unified LangChain gateway")

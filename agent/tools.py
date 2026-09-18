@@ -4,16 +4,18 @@ LangChain tools for the CircuitMind conversational gateway.
 Each tool wraps an existing module function unchanged. Tools that operate
 on "the circuit" (explain/diagnose/export) take no circuit argument from
 the LLM — they read the most recently generated/loaded circuit from the
-session's circuit_store via RunnableConfig, since asking the LLM to re-type
-a full circuit JSON as a tool argument is unreliable. generate_circuit_tool
-is the one tool that writes into circuit_store, as a side effect of its
-normal return.
+session's circuit_store via RunnableConfig, keyed by the same thread_id
+the checkpointer uses for chat history (see agent/executor.py). This
+avoids asking the LLM to re-type a full circuit JSON as a tool argument,
+which is unreliable. generate_circuit_tool is the one tool that writes
+into circuit_store, as a side effect of its normal return.
 
 Note: the `config: RunnableConfig` parameter on each tool is a special,
-recognized name in LangChain's tool-calling machinery — it is injected
-automatically at call time and stripped from the schema shown to the LLM,
-so the model never sees or has to supply it. Verify this behaves as
-expected against your installed langchain-core version before relying on it.
+recognized name in LangGraph/LangChain's tool-execution machinery — it is
+injected automatically at call time (carrying configurable.thread_id) and
+stripped from the schema shown to the LLM, so the model never sees or has
+to supply it. Verify this behaves as expected against your installed
+langchain-core/langgraph versions before relying on it.
 """
 
 from typing import Optional
@@ -31,8 +33,13 @@ from hint.hint_module import generate_hint
 from agent.session_store import get_circuit, set_circuit
 
 
-def _session_id(config: RunnableConfig) -> str:
-    return config["configurable"]["session_id"]
+def _thread_id(config: RunnableConfig) -> str:
+    """
+    The thread_id passed by create_agent's checkpointer machinery — see
+    agent/executor.py. Reused directly as the circuit_store key, since it's
+    the same session identifier by another name.
+    """
+    return config["configurable"]["thread_id"]
 
 
 @tool
@@ -46,7 +53,7 @@ def generate_circuit_tool(prompt: str, config: RunnableConfig) -> dict:
     result = generate_circuit(prompt)
     if "error" in result:
         return {"status": "error", "message": result["error"]}
-    set_circuit(_session_id(config), result)
+    set_circuit(_thread_id(config), result)
     return result
 
 
@@ -56,7 +63,7 @@ def explain_circuit_tool(config: RunnableConfig) -> dict:
     does, how current flows, and any warnings. Takes no arguments — always
     operates on the most recently generated or loaded circuit. Returns an
     error if no circuit is in context yet."""
-    circuit = get_circuit(_session_id(config))
+    circuit = get_circuit(_thread_id(config))
     if not circuit:
         return {"status": "error", "message": "No circuit in context yet — generate one first."}
     return explain_circuit(circuit)
@@ -69,7 +76,7 @@ def diagnose_circuit_tool(config: RunnableConfig) -> dict:
     resistor, short circuits, floating components, capacitor polarity,
     missing ground). Takes no arguments — always operates on the most
     recently generated or loaded circuit. Returns an error if none exists."""
-    circuit = get_circuit(_session_id(config))
+    circuit = get_circuit(_thread_id(config))
     if not circuit:
         return {"status": "error", "message": "No circuit in context yet — generate one first."}
     return diagnose_circuit(circuit)
@@ -82,7 +89,7 @@ def export_circuit_tool(export_format: str, config: RunnableConfig) -> dict:
     image), 'gate_json' (logic-gate graph). Takes no circuit argument —
     always operates on the most recently generated or loaded circuit.
     Returns an error if none exists."""
-    circuit = get_circuit(_session_id(config))
+    circuit = get_circuit(_thread_id(config))
     if not circuit:
         return {"status": "error", "message": "No circuit in context yet — generate one first."}
     if export_format not in {"spice", "svg", "gate_json"}:

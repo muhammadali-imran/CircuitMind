@@ -27,7 +27,7 @@ from agent.session_store import clear_session, get_circuit
 
 
 def _config(session_id: str) -> dict:
-    return {"configurable": {"session_id": session_id}}
+    return {"configurable": {"thread_id": session_id}}
 
 
 def test_all_tools_have_unique_names():
