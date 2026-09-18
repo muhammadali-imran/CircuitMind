@@ -55,9 +55,6 @@ cv_module/dataset/
 # ─────────────────────────────────────────────
 # Test / Debug Outputs
 # ─────────────────────────────────────────────
-diagnose/test_results.json
-explain/test_results.json
-export/TestResults.json
 test_results.json
 
 # ─────────────────────────────────────────────
@@ -75,4 +72,4 @@ Run_Locally.txt
 # ─────────────────────────────────────────────
 Backend Boolforge/
 Frontend Boolforge/
-prompt.txt
+prompt.txt
