@@ -35,13 +35,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "%(asctime)s [%(levelname)s] %(message)s"
 
-    # ── Rate limits ──────────────────────────────────────────────
-    generate_rate_limit: str = "5/minute"
-    explain_rate_limit: str = "10/minute"
-    diagnose_rate_limit: str = "10/minute"
-    export_rate_limit: str = "10/minute"
-    hint_rate_limit: str = "10/minute"
-    generate_and_explain_rate_limit: str = "3/minute"
+    # ── Rate limit ───────────────────────────────────────────────
+    # Single gateway endpoint now, so a single rate limit replaces the old
+    # per-route ones (generate/explain/diagnose/export/hint/generate-and-explain).
+    chat_rate_limit: str = "10/minute"
 
     model_config = SettingsConfigDict(
         env_file=".env",
