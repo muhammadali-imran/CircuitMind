@@ -15,6 +15,7 @@ It is **not** a fine-tuned domain-specific model. Circuit generation is done by 
 ## ⚙️ How It Actually Works
 
 | Step | Module | Approach |
+
 |---|---|---|
 | **Generate** | [`generate/generate.py`](generate/generate.py) | Prompt → Groq LLM (JSON-constrained) → falls back to 8 hardcoded keyword-matched circuit templates (LED, motor, buzzer, fan, temperature sensor, solar charger, 555 timer, RC filter) if the LLM call fails |
 | **Explain** | [`explain/explain_module.py`](explain/explain_module.py) | Looks each component up in [`utils/component_resolver.py`](utils/component_resolver.py)'s knowledge base (~30 components with role + description), builds a plain-English explanation, current-flow description, and warnings |
@@ -23,6 +24,7 @@ It is **not** a fine-tuned domain-specific model. Circuit generation is done by 
 | **Hint** | [`hint/hint_module.py`](hint/hint_module.py) | Given a digital-logic problem (truth table, I/O ports) and a student's current gate/wire graph from an external circuit builder, returns one short, non-spoiler hint via Groq — falls back to a few deterministic rule-based checks (empty canvas, missing I/O gates, floating gates) if the LLM call fails |
 
 A circuit is represented throughout as a simple JSON object:
+
 ```json
 {
   "circuit_name": "LED Circuit",
@@ -37,11 +39,8 @@ A circuit is represented throughout as a simple JSON object:
 
 ## 🗂️ Project Structure
 
-```
 CircuitMind/
-├── api/
-│   ├── app.py                  # FastAPI server (all endpoints)
-│   └── requirements.txt        # Slim deps for the Vercel serverless deployment
+├── api/app.py                  # FastAPI server (all endpoints)
 ├── generate/generate.py        # Prompt → circuit JSON (Groq LLM + rule-based fallback)
 ├── explain/explain_module.py   # Circuit JSON → plain-English explanation
 ├── diagnose/diagnose_module.py # Circuit JSON → electrical-issue checks
@@ -57,42 +56,55 @@ CircuitMind/
 ├── requirements.txt            # Full dependency set (API + Streamlit)
 ├── vercel.json                 # Deploys api/app.py as a Vercel Python function
 └── .env.example
-```
 
 ---
 
 ## 📦 Installation
 
 ### Requirements
+
 - Python 3.10+
 - A free [Groq API key](https://console.groq.com) (for LLM-backed generation and the Streamlit chatbot tab; both still work in a degraded mode without one)
 
 ### Setup
+
 ```bash
+# clone project
 git clone https://github.com/QuantumLogicsLabs/CircuitMind.git
+
+# move into project
 cd CircuitMind
 
+# create virtual environment
 python3 -m venv .venv
+
+# activate the virtual environment
 source .venv/bin/activate
 
+# install dependencies
 pip install -r requirements.txt
 
+# copy .env.example into .env
 cp .env.example .env
+
 # then edit .env and set GROQ_API_KEY
 ```
 
 ### Run the API
+
 ```bash
 uvicorn api.app:app --reload
 # Interactive docs: http://localhost:8000/docs
 ```
 
 ### Run the Streamlit UI
+
 ```bash
 streamlit run app_streamlit.py
 ```
 
 ### Run both together (Docker Compose)
+
 ```bash
 docker-compose up --build
 # API:       http://localhost:8000
@@ -104,6 +116,7 @@ docker-compose up --build
 ## 🚀 REST API
 
 | Method | Endpoint | Description |
+
 |---|---|---|
 | GET | `/health` | Health check |
 | POST | `/generate` | Prompt → circuit JSON |
@@ -128,8 +141,9 @@ Requests are rate-limited per-IP via `slowapi` (5/min on `/generate`, 10/min on 
 ## 🔑 Environment Variables
 
 | Variable | Required | Purpose |
+
 |---|---|---|
-| `GROQ_API_KEY` | Yes, for LLM generation | Without it, `/generate` falls back to the rule-based templates |
+| `GROQ_API_KEY` | Yes | Without it, `/generate` falls back to the rule-based templates |
 | `CIRCUITMIND_API_KEY` | No | If set, locks the API behind an `X-API-Key` header; unset = open access |
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS allow-list (defaults to local Streamlit ports) |
 | `RATE_LIMIT_REDIS_URL` | No | Redis connection string so rate limits hold across serverless instances (used on Vercel); falls back to in-memory otherwise |
@@ -153,6 +167,7 @@ The **website/** frontend is a separate submodule/repo, deployed on its own — 
 ```bash
 pytest tests/
 ```
+
 Covers all four modules individually (`TestGenerate`, `TestExplain`, `TestDiagnose`, `TestExport`) plus end-to-end integration cases (generate → explain, generate → diagnose, generate → export).
 
 ---
