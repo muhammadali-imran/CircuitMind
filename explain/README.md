@@ -6,17 +6,14 @@ The Explain Module is part of the CircuitMind pipeline. It takes a circuit JSON 
 
 ## How It Fits in the Pipeline
 
-```
-User Input → Generate Module → Circuit JSON → Explain Module → Explanation JSON
-```
+User message → Gateway Agent (agent/) → generate_circuit_tool → Circuit JSON → explain_circuit_tool → Explanation JSON
 
 ## Files
 
 | File | Description |
-|------|-------------|
-| `explain_module.py` | Core module — all logic lives here |
-| `test_cases.py` | Runs 5 test cases and saves results to JSON |
-| `test_results.json` | Output from running test_cases.py |
+
+|------|--------------|
+| `explain_module.py` | Core module — all logic lives here, unchanged from the pre-LangChain version |
 
 ## Input Format
 
@@ -45,7 +42,7 @@ User Input → Generate Module → Circuit JSON → Explain Module → Explanati
 ## Usage
 
 ```python
-from explain_module import explain_circuit
+from explain.explain_module import explain_circuit
 
 circuit = {
     "components": ["battery", "resistor", "led"],
@@ -59,7 +56,7 @@ print(result["explanation"])
 For multiple circuits at once:
 
 ```python
-from explain_module import explain_circuits_batch
+from explain.explain_module import explain_circuits_batch
 
 results = explain_circuits_batch([circuit1, circuit2])
 ```
@@ -81,21 +78,12 @@ Unknown components are handled gracefully — the module includes them with a wa
 
 ## Warnings
 
-The module automatically checks for common circuit issues:
-
 | Warning | Condition |
+
 |---------|-----------|
 | No power source | Circuit has no battery, power_supply, or solar_cell |
 | Missing current limiter | LED or diode present without a resistor or equivalent |
 | Unknown component | Component not found in the knowledge base |
-
-## Running the Tests
-
-```bash
-python test_cases.py
-```
-
-This runs 5 test cases and saves the results to `test_results.json` in the same folder.
 
 ## Notes
 

@@ -4,22 +4,19 @@ The Diagnose Module takes a circuit in JSON format as input, runs a series of el
 
 ## How It Fits in the Pipeline
 
-```
 User message → Gateway Agent (agent/) → generate_circuit_tool → Circuit JSON → diagnose_circuit_tool → Diagnosis JSON
-```
 
-Previously reached via its own `/diagnose` REST route; now reached only through the agent's `diagnose_circuit_tool` (see `agent/tools.py`), which reads the current circuit from session state instead of requiring it as an argument.
+ `diagnose_circuit_tool` (see `agent/tools.py`), which reads the current circuit from session state instead of requiring it as an argument.
 
 ## File
 
-```
 diagnose/
 └── diagnose_module.py
-```
 
 ## What It Does
 
 | # | Check | Type |
+
 |---|-------|------|
 | 1 | Missing power source | Error |
 | 2 | LED/Diode without current-limiting component | Warning |
@@ -51,6 +48,7 @@ diagnose/
 ### Issue Prefixes
 
 | Prefix | Meaning |
+
 |--------|---------|
 | `Error:` | Critical problem — circuit will not work |
 | `Warning:` | Potential problem — circuit may be damaged |
@@ -81,11 +79,9 @@ print(result)
 
 Uses a **BFS (Breadth-First Search)** algorithm to detect short circuits across paths of any length:
 
-```
 battery -> ground              ✅ detected (2 nodes)
 battery -> wire -> ground      ✅ detected (3 nodes)
 battery -> n1 -> n2 -> gnd    ✅ detected (4+ nodes)
-```
 
 Pure wire/net labels (`wire`, `node`, `net`, `trace`) are not counted as load components.
 
