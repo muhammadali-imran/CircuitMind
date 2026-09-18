@@ -1,60 +1,85 @@
 # CircuitMind
 
-> **An AI-powered electronics assistant that generates, explains, diagnoses, and exports simple circuits from a natural-language prompt.**
+> **An AI-powered electronics assistant that generates, explains, diagnoses, and exports simple circuits — through a single conversational gateway.**
 
 ---
 
 ## What it does
 
-CircuitMind is a FastAPI service (plus a Streamlit UI) that turns a plain-English request like *"make me a LED circuit"* into a structured circuit description, and can then explain it in plain English, check it for common electrical mistakes, and export it to SPICE, SVG, or a logic-gate JSON format.
+CircuitMind is a FastAPI service (plus a Streamlit UI) that turns a plain-English request like *"make me a LED circuit"* into a structured circuit description, and can then explain it in plain English, check it for common electrical mistakes, export it to SPICE/SVG/gate-JSON, or give a hint on a separate digital-logic gate-builder problem — all through one chat-style endpoint, `/chat`.
 
-It is **not** a fine-tuned domain-specific model. Circuit generation is done by an LLM call to Groq's hosted `llama-3.3-70b-versatile`, constrained by a system prompt to a fixed vocabulary of ~30 component types, with a deterministic keyword-matching fallback for when the LLM is unavailable. Explaining and diagnosing are done with a hand-curated component knowledge base and a set of rule-based checks — not machine learning.
+It is **not** a fine-tuned domain-specific model. Circuit generation is done by an LLM call to Groq's hosted `llama-3.3-70b-versatile`, constrained to a fixed vocabulary of ~30 component types, with a deterministic keyword-matching fallback for when the LLM is unavailable. Explaining and diagnosing are done with a hand-curated component knowledge base and a set of rule-based checks — not machine learning. Routing between these actions is handled by a **LangChain tool-calling agent**, not by separate REST routes.
 
 ---
 
-## ⚙️ How It Actually Works
+## ⚙️ Architecture
 
-| Step | Module | Approach |
+### The gateway
+
+Previously this was six separate REST routes (`/generate`, `/explain`, `/diagnose`, `/export`, `/hint`, `/generate-and-explain`), each stateless — callers had to hold the circuit JSON themselves and re-send it on every call. That's now collapsed into one route:
+'''
+POST /chat  { "session_id": "...", "message": "..." }
+→ { "reply": "...", "circuit": {...} | null }
+'''
+A LangChain tool-calling agent (`agent/executor.py`) decides which of five tools to call based on the message and the session's existing state:
+
+| Tool | Wraps | Operates on |
 
 |---|---|---|
-| **Generate** | [`generate/generate.py`](generate/generate.py) | Prompt → Groq LLM (JSON-constrained) → falls back to 8 hardcoded keyword-matched circuit templates (LED, motor, buzzer, fan, temperature sensor, solar charger, 555 timer, RC filter) if the LLM call fails |
-| **Explain** | [`explain/explain_module.py`](explain/explain_module.py) | Looks each component up in [`utils/component_resolver.py`](utils/component_resolver.py)'s knowledge base (~30 components with role + description), builds a plain-English explanation, current-flow description, and warnings |
-| **Diagnose** | [`diagnose/diagnose_module.py`](diagnose/diagnose_module.py) | Rule-based checks: missing power source, missing current-limiting resistor, no connections defined, BFS-based short-circuit detection, floating (disconnected) components, unspecified capacitor polarity, missing ground reference |
-| **Export** | [`export/export_module.py`](export/export_module.py) | Converts circuit JSON to a SPICE netlist, an SVG schematic (via `schemdraw`), or a gate-graph JSON (for a logic-gate simulator front end) |
-| **Hint** | [`hint/hint_module.py`](hint/hint_module.py) | Given a digital-logic problem (truth table, I/O ports) and a student's current gate/wire graph from an external circuit builder, returns one short, non-spoiler hint via Groq — falls back to a few deterministic rule-based checks (empty canvas, missing I/O gates, floating gates) if the LLM call fails |
+| `generate_circuit_tool` | `generate/generate.py` | the user's prompt — writes the result into session state |
+| `explain_circuit_tool` | `explain/explain_module.py` | the session's current circuit (no argument needed) |
+| `diagnose_circuit_tool` | `diagnose/diagnose_module.py` | the session's current circuit (no argument needed) |
+| `export_circuit_tool` | `export/export_module.py` | the session's current circuit + `export_format` |
+| `generate_hint_tool` | `hint/hint_module.py` | its own gate/wire graph payload — independent of "the circuit" |
 
-A circuit is represented throughout as a simple JSON object:
+### Statefulness
 
-```json
-{
-  "circuit_name": "LED Circuit",
-  "components": ["battery", "resistor", "led"],
-  "connections": ["battery -> resistor -> led"]
-}
-```
+Two things persist per `session_id`, via `agent/session_store.py`:
 
-> **Note:** Generate/Explain/Diagnose/Export are all scoped to *electronics* components (batteries, resistors, LEDs, transistors, ICs — see `utils/component_resolver.py`). Hint is the one exception: it's scoped to *digital-logic gates* (AND/OR/NOT/XOR/…) for an external logic-gate circuit builder, and uses its own gate/wire graph shape rather than the `components`/`connections` format above.
+- **Chat history** — `ChatMessageHistory`, threaded through the agent by `RunnableWithMessageHistory`
+- **The current circuit** — a plain dict, read/written by the tools via `RunnableConfig` injection, so the LLM never has to re-type a full circuit JSON as a tool argument
+
+Both are in-process dicts today — they reset on restart and aren't shared across multiple workers (the Dockerfile runs `--workers 2`). For multi-worker/production use, swap them for Redis-backed equivalents (`langchain_community`'s `RedisChatMessageHistory` for history; a Redis hash for the circuit store), using the Redis connection already provisioned via `RATE_LIMIT_REDIS_URL`.
+
+### Module split
+
+Each of `generate/` and `hint/` is split into three files:
+
+| File | Purpose |
+
+|---|---|
+| `<module>.py` | Public entry point — thin orchestrator: try LLM, fall back to rules |
+| `llm_<module>.py` | The Groq-calling logic |
+| `rule_<module>.py` (or `rule_templates.py`) | The deterministic fallback |
+
+`explain/`, `diagnose/`, and `export/` are unchanged — they're pure, rule-based, and have no LLM dependency, so nothing about the LangChain migration touches them.
 
 ---
 
 ## 🗂️ Project Structure
 
 CircuitMind/
-├── api/app.py                  # FastAPI server (all endpoints)
-├── generate/generate.py        # Prompt → circuit JSON (Groq LLM + rule-based fallback)
-├── explain/explain_module.py   # Circuit JSON → plain-English explanation
-├── diagnose/diagnose_module.py # Circuit JSON → electrical-issue checks
-├── export/export_module.py     # Circuit JSON → SPICE / SVG / gate JSON
-├── hint/hint_module.py         # Digital-logic problem + student's gate graph → one hint
-├── utils/component_resolver.py # Shared component knowledge base + name normalization
-├── app_streamlit.py            # Streamlit UI (Generate / Explain / Diagnose / Export / Chatbot tabs)
-├── cv_module/                  # Experimental, NOT wired into the API — see note below
-├── website/                    # Git submodule (separate repo, deployed independently on Vercel)
-├── tests/test_all_modules.py   # pytest suite covering all four modules
-├── Dockerfile                  # Builds the API and Streamlit containers
-├── docker-compose.yml          # Runs API (7860) + Streamlit (8501) together
-├── requirements.txt            # Full dependency set (API + Streamlit)
-├── vercel.json                 # Deploys api/app.py as a Vercel Python function
+├── agent/                       # the gateway layer
+│   ├── tools.py                 # LangChain tools wrapping generate/explain/diagnose/export/hint
+│   ├── llm.py                   # ChatGroq instance
+│   ├── prompt.py                # system prompt for the gateway agent
+│   ├── executor.py              # tool-calling agent + RunnableWithMessageHistory
+│   └── session_store.py         # per-session chat history + current circuit
+├── api/app.py                   # single /chat route (+ /chat/reset, /health)
+├── generate/                    # generate.py (orchestrator) + llm_generate.py + rule_templates.py
+├── explain/explain_module.py
+├── diagnose/diagnose_module.py
+├── export/export_module.py
+├── hint/                        # hint_module.py (orchestrator) + llm_hint.py + rule_hint.py
+├── utils/component_resolver.py  # shared component knowledge base
+├── cv_module/                   # experimental, NOT wired into the API
+├── tests/
+│   ├── test_all_modules.py      # generate/explain/diagnose/export/hint, pure-function level
+│   └── test_agent.py            # tool-layer tests (session state, no live LLM calls)
+├── app_streamlit.py             # single chat UI, replaces the old 5-tab layout
+├── settings.py                  # centralized config, reads .env via pydantic-settings
+├── Dockerfile / docker-compose.yml
+├── requirements.txt
 └── .env.example
 
 ---
@@ -64,7 +89,7 @@ CircuitMind/
 ### Requirements
 
 - Python 3.10+
-- A free [Groq API key](https://console.groq.com) (for LLM-backed generation and the Streamlit chatbot tab; both still work in a degraded mode without one)
+- A free [Groq API key](https://console.groq.com)
 
 ### Setup
 
@@ -75,16 +100,14 @@ git clone https://github.com/QuantumLogicsLabs/CircuitMind.git
 # move into project
 cd CircuitMind
 
-# create virtual environment
+#create virtual environment
 python3 -m venv .venv
 
 # activate the virtual environment
 source .venv/bin/activate
-
 # install dependencies
 pip install -r requirements.txt
 
-# copy .env.example into .env
 cp .env.example .env
 
 # then edit .env and set GROQ_API_KEY
@@ -119,22 +142,20 @@ docker-compose up --build
 
 |---|---|---|
 | GET | `/health` | Health check |
-| POST | `/generate` | Prompt → circuit JSON |
-| POST | `/explain` | Circuit JSON → plain-English explanation |
-| POST | `/diagnose` | Circuit JSON → electrical-issue report |
-| POST | `/export` | Circuit JSON → `spice` / `svg` / `gate_json` |
-| POST | `/hint` | Digital-logic problem + student's gate graph → one non-spoiler hint |
-| POST | `/generate-and-explain` | Generate + explain + diagnose in one call |
+| POST | `/chat` | Send a message for this session; the agent routes it to the right action(s) |
+| POST | `/chat/reset` | Clear a session's chat history and current circuit |
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "make me a LED circuit"}'
+  -d '{"session_id": "abc123", "message": "make me a LED circuit"}'
+
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "abc123", "message": "now check it for issues"}'
 ```
 
-Full request/response examples are in [`api/README.md`](api/README.md).
-
-Requests are rate-limited per-IP via `slowapi` (5/min on `/generate`, 10/min on `/explain`, `/diagnose`, `/export`, `/hint`, 3/min on `/generate-and-explain`) and, if `CIRCUITMIND_API_KEY` is set, require an `X-API-Key` header.
+Requests are rate-limited per-IP via `slowapi` (`chat_rate_limit`, default 10/min — see `settings.py`) and, if `CIRCUITMIND_API_KEY` is set, require an `X-API-Key` header.
 
 ---
 
@@ -143,22 +164,11 @@ Requests are rate-limited per-IP via `slowapi` (5/min on `/generate`, 10/min on 
 | Variable | Required | Purpose |
 
 |---|---|---|
-| `GROQ_API_KEY` | Yes | Without it, `/generate` falls back to the rule-based templates |
-| `CIRCUITMIND_API_KEY` | No | If set, locks the API behind an `X-API-Key` header; unset = open access |
-| `ALLOWED_ORIGINS` | No | Comma-separated CORS allow-list (defaults to local Streamlit ports) |
-| `RATE_LIMIT_REDIS_URL` | No | Redis connection string so rate limits hold across serverless instances (used on Vercel); falls back to in-memory otherwise |
-
----
-
-## ☁️ Deployment
-
-**Docker Compose** — the original deployment path. `docker-compose.yml` builds both the API and Streamlit containers from the shared `Dockerfile`/`requirements.txt`.
-
-**Vercel (API only)** — `vercel.json` and `api/requirements.txt` deploy `api/app.py` as a Python serverless function. This works because the API path has no local model weights and does no long-running or stateful work per request — it's a thin FastAPI layer around a Groq API call. Set the four environment variables above on the Vercel project, plus provision a Redis instance (e.g. Upstash via Vercel Storage) for `RATE_LIMIT_REDIS_URL`.
-
-The **Streamlit UI is not deployed on Vercel** — it needs a persistent process and WebSocket connection, which serverless functions don't support. It runs via the existing `Dockerfile` on any container host (Render, Fly.io, Railway, Hugging Face Spaces, etc.) if needed.
-
-The **website/** frontend is a separate submodule/repo, deployed on its own — not part of this deployment.
+| `GROQ_API_KEY` | Yes | Without it, generate/hint fall back to their rule-based paths |
+| `CIRCUITMIND_API_KEY` | No | If set, locks `/chat` behind an `X-API-Key` header; unset = open access |
+| `ALLOWED_ORIGINS` | No | Comma-separated CORS allow-list |
+| `RATE_LIMIT_REDIS_URL` | No | Redis connection string so rate limits (and, once migrated, session state) hold across workers/instances |
+| `LANGCHAIN_TRACING_V2` / `LANGCHAIN_API_KEY` / `LANGCHAIN_PROJECT` | No | Optional LangSmith tracing for the gateway agent |
 
 ---
 
@@ -168,26 +178,19 @@ The **website/** frontend is a separate submodule/repo, deployed on its own — 
 pytest tests/
 ```
 
-Covers all four modules individually (`TestGenerate`, `TestExplain`, `TestDiagnose`, `TestExport`) plus end-to-end integration cases (generate → explain, generate → diagnose, generate → export).
+`test_all_modules.py` covers generate/explain/diagnose/export/hint as pure functions. `test_agent.py` covers the tool layer directly — session isolation, error handling with no circuit in context — without making live LLM calls (full agent routing accuracy needs a live Groq call and isn't covered by the automated suite).
 
 ---
 
 ## ⚠️ Known Limitations
 
-- Generation quality is bounded by the LLM prompt and by 8 hardcoded fallback templates — there's no trained, domain-specific circuit model, no SPICE simulation to validate generated circuits, and no real component/BOM sourcing.
-- The component knowledge base (`utils/component_resolver.py`) covers ~30 common component types; anything outside it is treated as "unknown" by Explain/Diagnose.
-- **`cv_module/`** (image → circuit JSON via YOLO object detection) is an unfinished, standalone experiment. It requires manually downloading trained YOLO weights, has its own `requirements_cv.txt` (`torch`, `ultralytics`, `opencv-python`), and is **not imported or exposed by `api/app.py`**.
-- Rate limiting defaults to in-memory storage, which only holds correctly within a single running process — set `RATE_LIMIT_REDIS_URL` for multi-instance/serverless deployments.
+- Session state (`agent/session_store.py`) is in-process — resets on restart, not shared across multiple uvicorn workers. Fine for single-worker/dev; needs a Redis-backed swap for production multi-worker deployments.
+- Generation quality is bounded by the LLM prompt and by the hardcoded fallback templates in `rule_templates.py` — no trained, domain-specific circuit model, no SPICE simulation to validate generated circuits.
+- The component knowledge base (`utils/component_resolver.py`) covers ~30 common component types; anything outside it is treated as "unknown" by explain/diagnose.
+- **`cv_module/`** (image → circuit JSON via YOLO object detection) is an unfinished, standalone experiment, not imported or exposed by `api/app.py`.
+- `app_streamlit.py` and this gateway both call the LangChain agent **in-process** (monolithic architecture, same as before the migration) — there is no HTTP hop between them.
 
-```json
-{
-  "circuit_name": "LED Circuit",
-  "components": ["battery", "resistor", "led"],
-  "connections": ["battery -> resistor -> led"]
-}
-```
-
-CircuitMind is **proprietary software** — see [`LICENSE`](LICENSE) for the full terms. It is not open source; contributions and use are governed by that agreement.
+CircuitMind is **proprietary software** — see [`LICENSE`](LICENSE) for the full terms.
 
 ---
 
