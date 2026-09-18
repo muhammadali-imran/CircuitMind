@@ -16,7 +16,8 @@ from generate.generate import generate_circuit
 from explain.explain_module import explain_circuit
 from diagnose.diagnose_module import diagnose_circuit
 from export.export_module import export_module
-from hint.hint_module import generate_hint, _hint_with_rules
+from hint.hint_module import generate_hint
+from hint.rule_hint import hint_with_rules as _hint_with_rules
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -71,14 +72,14 @@ class TestGenerate:
             assert isinstance(result, dict)
 
     def test_half_adder_is_not_a_subtractor(self):
-        from generate.generate import generate_with_rules
+        from generate.rule_templates import generate_with_rules
         result = generate_with_rules("make a half adder circuit")
         assert result["circuit_name"] == "Half Adder Circuit"
         assert "sum_output" in result["components"]
         assert "diff_output" not in result["components"]
 
     def test_half_subtractor_still_matches(self):
-        from generate.generate import generate_with_rules
+        from generate.rule_templates import generate_with_rules
         result = generate_with_rules("half subtractor")
         assert result["circuit_name"] == "Half Subtractor Circuit"
 
@@ -141,7 +142,7 @@ class TestDiagnose:
         assert "passed" in result
         assert "issues" in result
         assert isinstance(result["issues"], list)
-    
+
     def test_switch_short_detected(self):
         circuit = {
           "components": ["battery", "switch", "ground"],
@@ -264,8 +265,9 @@ class TestExport:
 # ── Hint ───────────────────────────────────────────────────────────────────────
 # generate_hint() prefers the LLM when GROQ_API_KEY is configured (as it is
 # here), so content-specific assertions target the deterministic rule-based
-# fallback (_hint_with_rules) directly rather than depending on environment
-# state or burning real API calls.
+# fallback (hint_with_rules, aliased below as _hint_with_rules for backward
+# compatibility) directly rather than depending on environment state or
+# burning real API calls.
 
 class TestHint:
     def test_generate_hint_always_returns_hint_and_source(self):
