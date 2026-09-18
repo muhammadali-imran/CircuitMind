@@ -22,10 +22,27 @@ logger = logging.getLogger(__name__)
 def generate_hint(payload: dict) -> dict:
     """
     Main entry point.
-    Input:  dict with problem_title, problem_description, inputs, outputs,
-            truth_table, gates, wires, last_result (all optional).
-    Output: { "hint": str, "source": "llm" | "rule-based" } — never raises.
+
+    Supports:
+    - normal hint requests
+    - circuit identification requests
+
+    Output:
+    {
+        "hint": str,
+        "source": "llm" | "rule-based"
+    }
     """
+    if payload.get("request_type") == "identify":
+        circuit_name = _identify_circuit(payload)
+
+        if circuit_name != "Unknown circuit":
+            return {
+                "hint": f"You have created a {circuit_name} circuit.",
+                "source": "rule-based",
+                "circuit_name": circuit_name,
+            }
+
     try:
         hint_text = hint_with_llm(payload)
         source = "llm"
